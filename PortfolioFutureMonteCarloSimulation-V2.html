@@ -157,6 +157,20 @@ canvas#scaleLegend { border-radius: 3px; }
 .dep-count { font-size: 11px; color: var(--faint); margin-top: 3px; }
 
 /* ─── FOOTER NOTE ─── */
+
+/* ─── Depletion chart section ─── */
+.dep-chart-wrap { position:relative; width:100%; height:200px; margin-bottom:10px; }
+.dep-stats-row  { display:flex; gap:10px; flex-wrap:wrap; margin-top:4px; }
+.dep-stat-item  { flex:1; min-width:110px; text-align:center;
+                  padding:10px 8px; background:var(--bg); border-radius:8px; }
+.dep-stat-label { font-size:11px; color:var(--muted); margin-bottom:4px; }
+.dep-stat-val   { font-size:18px; font-weight:600; font-family:'DM Mono',monospace; }
+.dep-stat-val.ok   { color:var(--p50); }
+.dep-stat-val.warn { color:var(--p25); }
+.dep-stat-val.bad  { color:var(--p10); }
+.dep-stat-count { font-size:10px; color:var(--faint); margin-top:2px; }
+.dep-note { font-size:11px; color:var(--muted); font-style:italic; padding:6px 0; }
+
 .foot-note { font-size: 11px; color: var(--faint); line-height: 1.7; padding: 4px 0 12px; }
 </style>
 </head>
@@ -183,8 +197,8 @@ canvas#scaleLegend { border-radius: 3px; }
     <div class="field">
       <label>Withdrawal mode</label>
       <div class="toggle">
-        <button class="act" id="btnFixed" onclick="setMode('fixed')">Fixed $</button>
-        <button id="btnPct" onclick="setMode('pct')">% of portfolio</button>
+        <button class="act" id="btnFixed" type="button" onclick="setMode('fixed')">Fixed $</button>
+        <button id="btnPct" type="button" onclick="setMode('pct')">% of portfolio</button>
       </div>
     </div>
 
@@ -207,9 +221,9 @@ canvas#scaleLegend { border-radius: 3px; }
     <div class="field">
       <label>Simulation horizon (years)</label>
       <div class="toggle" id="yearsToggle">
-        <button onclick="setSimYears(20,this)">20 yrs</button>
-        <button class="act" onclick="setSimYears(30,this)">30 yrs</button>
-        <button onclick="setSimYears(40,this)">40 yrs</button>
+        <button type="button" onclick="setSimYears(20,this)">20 yrs</button>
+        <button class="act" type="button" onclick="setSimYears(30,this)">30 yrs</button>
+        <button type="button" onclick="setSimYears(40,this)">40 yrs</button>
       </div>
     </div>
 
@@ -231,14 +245,14 @@ canvas#scaleLegend { border-radius: 3px; }
     <div class="field">
       <label>Number of simulations</label>
       <div class="toggle" id="runsToggle">
-        <button class="act" onclick="setRuns(1000, this)">1,000</button>
-        <button onclick="setRuns(3000, this)">3,000</button>
-        <button onclick="setRuns(5000, this)">5,000</button>
+        <button class="act" type="button" onclick="setRuns(1000, this)">1,000</button>
+        <button type="button" onclick="setRuns(3000, this)">3,000</button>
+        <button type="button" onclick="setRuns(5000, this)">5,000</button>
       </div>
     </div>
     <input type="hidden" id="numRuns" value="1000">
 
-    <button class="run-btn" id="runBtn" onclick="runMC()">▶  Run Simulation</button>
+    <button type="button" class="run-btn" id="runBtn" onclick="runMC()">▶  Run Simulation</button>
 
     <div class="progress" id="progEl">
       <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
@@ -335,12 +349,14 @@ canvas#scaleLegend { border-radius: 3px; }
 
     <!-- Depletion risk -->
     <div class="card" id="depCard">
-      <div class="card-hdr"><span class="card-title">Depletion risk — % of simulations where portfolio reached $0</span></div>
-      <div class="dep-grid">
-        <div class="dep-item"><div class="dep-label" id="depLbl0">By year 10</div><div class="dep-val" id="depA">—</div><div class="dep-count" id="depcA"></div></div>
-        <div class="dep-item"><div class="dep-label" id="depLbl1">By year 20</div><div class="dep-val" id="depB">—</div><div class="dep-count" id="depcB"></div></div>
-        <div class="dep-item"><div class="dep-label" id="depLbl2">By year 30</div><div class="dep-val" id="depC">—</div><div class="dep-count" id="depcC"></div></div>
+      <div class="card-hdr">
+        <span class="card-title">Depletion risk — portfolio value by percentile over time</span>
+        <span class="card-sub">P25 / P50 / P75 / P90 · dashed line = $0 depletion threshold</span>
       </div>
+      <div class="dep-chart-wrap">
+        <canvas id="depChart" role="img" aria-label="Line chart showing portfolio value percentiles over time with depletion threshold"></canvas>
+      </div>
+      <div class="dep-stats-row" id="depStats"></div>
     </div>
 
     <p class="foot-note" id="footNote"></p>
@@ -588,10 +604,11 @@ function setMode(m) {
    MAIN SIMULATION
 ═══════════════════════════════════════ */
 function runMC() {
-  const N       = Math.min(5000, Math.max(100, parseInt(document.getElementById('numRuns').value)   || 1000));
-  const start   = Math.max(1000, parseFloat(document.getElementById('startVal').value)              || 2000000);
-  const rawAmt  = parseFloat(document.getElementById('wdAmt').value);
-  const wdAmt   = Math.max(0, isNaN(rawAmt) ? (wdMode === 'fixed' ? 80000 : 4) : rawAmt);
+  const N            = Math.min(5000, Math.max(100, parseInt(document.getElementById('numRuns').value)   || 1000));
+  const start        = Math.max(1000, parseFloat(document.getElementById('startVal').value)              || 2000000);
+  const capturedMode = wdMode;   /* freeze at click-time — mid-run toggle changes must not affect this run */
+  const rawAmt       = parseFloat(document.getElementById('wdAmt').value);
+  const wdAmt        = Math.max(0, isNaN(rawAmt) ? (capturedMode === 'fixed' ? 80000 : 4) : rawAmt);
   const YEARS   = simYears;
   const wdYear  = Math.min(YEARS, Math.max(1, parseInt(document.getElementById('wdYear').value) || 5));
   document.getElementById('wdYear').max = YEARS;
@@ -628,7 +645,7 @@ function runMC() {
           v *= (1 + pool[y].r / 100);
           if (y + 1 >= wdYear) {
             let wd = 0;
-            if (wdMode === 'fixed') {
+            if (capturedMode === 'fixed') {
               wd = Math.min(wdAmt, v);
               v -= wd; cumWd += wd;
               if (v <= 0) { v = 0; depleted = true; }
@@ -665,7 +682,7 @@ function runMC() {
       document.getElementById('progLabel').textContent = done.toLocaleString() + ' / ' + N.toLocaleString() + ' simulations';
 
       if (done < N) { requestAnimationFrame(step); }
-      else { finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS); }
+      else { finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode); }
     }
     step();
   }, 20);
@@ -674,7 +691,7 @@ function runMC() {
 /* ═══════════════════════════════════════
    RENDER RESULTS
 ═══════════════════════════════════════ */
-function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS) {
+function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode) {
   yearVals.forEach(a => a.sort((x, y) => x - y));
 
   /* Extract per-simulation distributions and sort each independently.
@@ -707,11 +724,14 @@ function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, 
     };
   });
 
-  renderMilestoneCards(series, start, YEARS);
-  renderTable(tableRows, MS, YEARS, wdMode);
-  renderDepletion(depCounts, MS, N, wdMode);
+  /* Each render call is isolated — a failure in one must not block the others
+     or prevent results from being shown. capturedMode is used throughout to
+     avoid mid-run toggle changes corrupting the display. */
+  try { renderMilestoneCards(series, start, YEARS); }          catch(e) { console.error('Milestone cards:', e); }
+  try { renderTable(tableRows, MS, YEARS, capturedMode); }     catch(e) { console.error('Table:', e); }
+  try { renderDepletion(depCounts, MS, N, capturedMode, series, YEARS); } catch(e) { console.error('Depletion:', e); }
 
-  const modeNote = wdMode === 'fixed'
+  const modeNote = capturedMode === 'fixed'
     ? `Fixed withdrawal of $${Math.round(wdAmt).toLocaleString()}/yr starting year ${wdYear}.`
     : `${wdAmt.toFixed(1)}% of portfolio balance withdrawn annually starting year ${wdYear}.`;
   document.getElementById('footNote').textContent =
@@ -776,7 +796,7 @@ function renderFanChart(series, YEARS) {
         data: series[d.p],
         borderColor: d.color,
         borderWidth: d.width,
-        segment: d.dash.length ? { borderDash: () => d.dash } : undefined,
+        ...(d.dash.length ? { segment: { borderDash: () => d.dash } } : {}),
         pointRadius: 0,
         pointHitRadius: 10,
         fill: false,
@@ -988,19 +1008,109 @@ function renderTable(tableRows, MS, YEARS, wdMode) {
 }
 
 /* ─── Depletion ─── */
-function renderDepletion(depCounts, MS, N, mode) {
+function renderDepletion(depCounts, MS, N, mode, series, YEARS) {
   const card = document.getElementById('depCard');
-  if (mode === 'pct') { card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
-  const keys = [['depA','depcA'],['depB','depcB'],['depC','depcC']];
-  depCounts.forEach((d, i) => {
-    document.getElementById('depLbl'+i).textContent = 'By year ' + MS[i];
-    const pct = d / N * 100;
-    const el  = document.getElementById(keys[i][0]);
-    el.textContent = fmtPct(pct);
-    el.className   = 'dep-val ' + (pct < 2 ? 'ok' : pct < 10 ? 'warn' : 'bad');
-    document.getElementById(keys[i][1]).textContent = d.toLocaleString() + ' of ' + N.toLocaleString() + ' runs';
+
+  /* ── Chart ── */
+  const canvas = document.getElementById('depChart');
+  const existing = Chart.getChart(canvas);
+  if (existing) existing.destroy();
+
+  const labels = Array.from({ length: YEARS }, (_, i) => 'Yr ' + (i + 1));
+  const isDark  = matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridCol = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)';
+
+  const lineDefs = [
+    { p: 25, color: '#D97706', width: 1.8, dash: [3,2] },
+    { p: 50, color: '#1D9E75', width: 2.5, dash: []    },
+    { p: 75, color: '#2563EB', width: 1.8, dash: [3,2] },
+    { p: 90, color: '#7C3AED', width: 1.5, dash: [4,3] },
+  ];
+
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        /* $0 depletion threshold — drawn first so it sits behind percentile lines */
+        {
+          label: '$0 threshold',
+          data: Array(YEARS).fill(0),
+          borderColor: 'rgba(220,38,38,0.55)',
+          borderWidth: 1.5,
+          segment: { borderDash: () => [6, 4] },
+          pointRadius: 0,
+          fill: false,
+          order: 10,
+        },
+        ...lineDefs.map(d => ({
+          label: 'P' + d.p,
+          data: series[d.p],
+          borderColor: d.color,
+          borderWidth: d.width,
+          ...(d.dash.length ? { segment: { borderDash: () => d.dash } } : {}),
+          pointRadius: 0,
+          fill: false,
+          tension: 0.35,
+          order: 1,
+        })),
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: isDark ? '#9CA3AF' : '#6B7280', font: { size: 11, family: 'DM Sans' }, boxWidth: 22, padding: 14 }
+        },
+        tooltip: {
+          mode: 'index', intersect: false,
+          callbacks: {
+            label: c => {
+              if (c.dataset.label === '$0 threshold') return null;
+              const v = c.raw;
+              return ` ${c.dataset.label}: ${v <= 0 ? 'Depleted' : fmtM(v)}`;
+            }
+          },
+          filter: item => item.dataset.label !== '$0 threshold'
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: gridCol },
+          ticks: { color: '#9CA3AF', font: { size: 10, family: 'DM Sans' }, autoSkip: true, maxTicksLimit: 10 }
+        },
+        y: {
+          min: 0,
+          grid: { color: gridCol },
+          ticks: {
+            color: '#9CA3AF', font: { size: 10, family: 'DM Sans' },
+            callback: v => '$' + (v >= 1e6 ? (v/1e6).toFixed(1)+'M' : (v/1e3).toFixed(0)+'K')
+          }
+        }
+      }
+    }
   });
+
+  /* ── Stats strip below chart ── */
+  const statsEl = document.getElementById('depStats');
+  if (mode === 'pct') {
+    statsEl.innerHTML =
+      `<p class="dep-note">% withdrawal mode: the portfolio cannot reach $0 &#8212; each withdrawal takes a fixed fraction of the remaining balance, which shrinks toward zero asymptotically but never fully depletes.</p>`;
+  } else {
+    statsEl.innerHTML = MS.map((yr, i) => {
+      const d   = depCounts[i];
+      const pct = d / N * 100;
+      const cls = pct < 2 ? 'ok' : pct < 10 ? 'warn' : 'bad';
+      return `<div class="dep-stat-item">
+        <div class="dep-stat-label">Depleted by yr ${yr}</div>
+        <div class="dep-stat-val ${cls}">${fmtPct(pct)}</div>
+        <div class="dep-stat-count">${d.toLocaleString()} / ${N.toLocaleString()} runs</div>
+      </div>`;
+    }).join('');
+  }
 }
 
 /* ─── Runs toggle ─── */
