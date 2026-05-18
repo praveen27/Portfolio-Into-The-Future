@@ -366,7 +366,6 @@ canvas#scaleLegend { border-radius: 3px; }
     <p class="foot-note" id="footNote"></p>
 
   </div><!-- /results -->
-  </div><!-- /results -->
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js" crossorigin="anonymous"></script>
@@ -550,7 +549,7 @@ function fmtPct(n) { return n.toFixed(1) + '%'; }
    HEAT MAP COLOR SCALE
    Cool (sparse) → Warm (dense)
 ═══════════════════════════════════════ */
-function heatColor(t, alpha) {
+function heatColor(t) {
   /* t: 0–1 normalized density. Returns rgb string. */
   if (t <= 0) return 'rgba(0,0,0,0)';
   const stops = [
@@ -570,7 +569,7 @@ function heatColor(t, alpha) {
   const r = Math.round(ca[0] + (cb[0] - ca[0]) * f);
   const g = Math.round(ca[1] + (cb[1] - ca[1]) * f);
   const b = Math.round(ca[2] + (cb[2] - ca[2]) * f);
-  return alpha !== undefined ? `rgba(${r},${g},${b},${alpha})` : `rgb(${r},${g},${b})`;
+  return `rgb(${r},${g},${b})`;
 }
 
 function drawScaleLegend() {
@@ -610,13 +609,16 @@ function setMode(m) {
    MAIN SIMULATION
 ═══════════════════════════════════════ */
 function runMC() {
-  const N            = Math.min(5000, Math.max(100, parseInt(document.getElementById('numRuns').value)   || 1000));
-  const start        = Math.max(1000, parseFloat(document.getElementById('startVal').value)              || 2000000);
+  const _rawN    = parseInt(document.getElementById('numRuns').value);
+  const N        = Math.min(5000, Math.max(100, isNaN(_rawN)  ? 1000 : _rawN));
+  const _rawSt   = parseFloat(document.getElementById('startVal').value);
+  const start    = Math.max(1000, isNaN(_rawSt) ? 2000000 : _rawSt);
   const capturedMode = wdMode;   /* freeze at click-time — mid-run toggle changes must not affect this run */
-  const rawAmt       = parseFloat(document.getElementById('wdAmt').value);
-  const wdAmt        = Math.max(0, isNaN(rawAmt) ? (capturedMode === 'fixed' ? 80000 : 4) : rawAmt);
-  const YEARS   = simYears;
-  const wdYear  = Math.min(YEARS, Math.max(1, parseInt(document.getElementById('wdYear').value) || 5));
+  const rawAmt   = parseFloat(document.getElementById('wdAmt').value);
+  const wdAmt    = Math.max(0, isNaN(rawAmt) ? (capturedMode === 'fixed' ? 80000 : 4) : rawAmt);
+  const YEARS    = simYears;
+  const _rawWdY  = parseInt(document.getElementById('wdYear').value);
+  const wdYear   = Math.min(YEARS, Math.max(1, isNaN(_rawWdY) ? 5 : _rawWdY));
   document.getElementById('wdYear').max = YEARS;
   const MS      = getMilestones(YEARS);
 
@@ -708,18 +710,19 @@ function runMC() {
 function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode) {
   yearVals.forEach(a => a.sort((x, y) => x - y));
 
-  /* Extract per-simulation distributions and sort each independently.
-     Marginal percentiles → every column is monotonic across rows (P10 ≤ P25 ≤ … ≤ P90).
-     min ≤ avg ≤ max is still preserved within each row by stochastic ordering:
-     since annMin_s ≤ annAvg_s ≤ annMax_s holds for every individual simulation s,
-     the k-th smallest of each sorted array maintains the same inequality. */
-  const allCumWd  = simSummary.map(r => r[3]).sort((a, b) => a - b);
-  const allAnnMin = simSummary.map(r => r[4]).sort((a, b) => a - b);
-  const allAnnAvg = simSummary.map(r => r[5]).sort((a, b) => a - b);
-  const allAnnMax = simSummary.map(r => r[6]).sort((a, b) => a - b);
-  const allRet0   = simSummary.map(r => r[7]).sort((a, b) => a - b);
-  const allRet1   = simSummary.map(r => r[8]).sort((a, b) => a - b);
-  const allRet2   = simSummary.map(r => r[9]).sort((a, b) => a - b);
+  /* Sort simSummary by annAvg (field 5) so that annMin/annAvg/annMax are always
+     extracted from the same simulation at every percentile rank.
+     This guarantees annMin ≤ annAvg ≤ annMax holds within every table row —
+     a property that independent per-column sorting cannot guarantee because
+     the k-th element of each sorted column can come from different simulations. */
+  simSummary.sort((a, b) => a[5] - b[5]);
+
+  /* cumWd and ret fields are marginal — each sorted independently so their
+     own column is monotonic (P10 ≤ P25 ≤ … ≤ P90 within each column). */
+  const allCumWd = simSummary.map(r => r[3]).sort((a, b) => a - b);
+  const allRet0  = simSummary.map(r => r[7]).sort((a, b) => a - b);
+  const allRet1  = simSummary.map(r => r[8]).sort((a, b) => a - b);
+  const allRet2  = simSummary.map(r => r[9]).sort((a, b) => a - b);
 
   const PS = [10, 25, 50, 75, 90];
 
@@ -727,17 +730,20 @@ function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, 
   const series = {};
   PS.forEach(p => { series[p] = yearVals.map(a => Math.max(0, Math.round(pctile(a, p)))); });
 
-  /* Marginal table rows — each cell independently sorted, all monotonic */
+  /* Table rows: annMin/annAvg/annMax extracted from the same ranked simulation
+     (simSummary sorted by annAvg), so the within-row invariant is preserved.
+     v0/v1/v2 remain marginal (column-sorted) for monotonic percentile bands. */
   const tableRows = {};
   PS.forEach(p => {
+    const r = pctile(simSummary, p);   /* one simulation row at this percentile rank */
     tableRows[p] = {
       v0:     Math.round(pctile(yearVals[MS[0] - 1], p)),
       v1:     Math.round(pctile(yearVals[MS[1] - 1], p)),
       v2:     Math.round(pctile(yearVals[MS[2] - 1], p)),
-      cumWd:  Math.round(pctile(allCumWd,  p)),
-      annMin: Math.round(pctile(allAnnMin, p)),
-      annAvg: Math.round(pctile(allAnnAvg, p)),
-      annMax: Math.round(pctile(allAnnMax, p)),
+      cumWd:  Math.round(pctile(allCumWd, p)),
+      annMin: Math.round(r[4]),
+      annAvg: Math.round(r[5]),
+      annMax: Math.round(r[6]),
       ret0:   +pctile(allRet0, p).toFixed(2),  /* avg S&P return % to milestone 0 */
       ret1:   +pctile(allRet1, p).toFixed(2),  /* avg S&P return % to milestone 1 */
       ret2:   +pctile(allRet2, p).toFixed(2)   /* avg S&P return % to milestone 2 */
@@ -863,9 +869,12 @@ function renderHistogram(yr30sorted, N, series, YEARS) {
   const binSize = Math.ceil(maxV / NUM_BINS / 100000) * 100000 || 500000;
   const bins  = new Array(NUM_BINS + 1).fill(0);
   yr30sorted.forEach(v => { bins[Math.min(NUM_BINS, 0|v/binSize)]++; });
+  function fmtBin(v) {
+    return v >= 1e6 ? '$' + (v / 1e6).toFixed(1) + 'M' : '$' + (v / 1e3).toFixed(0) + 'K';
+  }
   const labels = bins.map((_, i) => i < NUM_BINS
-    ? '$' + ((i * binSize) / 1e6).toFixed(1) + 'M'
-    : '$' + (NUM_BINS * binSize / 1e6).toFixed(1) + 'M+');
+    ? fmtBin(i * binSize)
+    : fmtBin(NUM_BINS * binSize) + '+');
   const p10v = series[10][YEARS-1], p50v = series[50][YEARS-1];
   const colors = bins.map((_, i) => {
     const mid = i * binSize + binSize / 2;
