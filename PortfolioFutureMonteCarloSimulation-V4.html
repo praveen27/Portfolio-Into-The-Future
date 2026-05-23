@@ -742,12 +742,12 @@ function runMC() {
         const pool = getPool(pool70, YEARS, capturedSampling, capturedBlock);
         let v = start, depleted = false, cumWd = 0;
         let annWdMin = Infinity, annWdMax = 0, annWdSum = 0, annWdCnt = 0;
-        let retSum0 = 0, retSum1 = 0, retSum2 = 0;  /* cumulative S&P returns to each milestone */
+        let retProd0 = 1, retProd1 = 1, retProd2 = 1;  /* compound growth factors to each milestone */
         for (let y = 0; y < YEARS; y++) {
-          const sp = pool[y].r;
-          if (y + 1 <= MS[0]) retSum0 += sp;
-          if (y + 1 <= MS[1]) retSum1 += sp;
-          retSum2 += sp;                              /* MS[2] === YEARS, always accumulate */
+          const factor = 1 + pool[y].r / 100;
+          if (y + 1 <= MS[0]) retProd0 *= factor;
+          if (y + 1 <= MS[1]) retProd1 *= factor;
+          retProd2 *= factor;
           if (depleted) { yearVals[y].push(0); continue; }
           v *= (1 + pool[y].r / 100);
           if (y + 1 >= wdYear) {
@@ -771,16 +771,16 @@ function runMC() {
         }
         /* store path summary — all values from the same simulation */
         simSummary.push([
-          yearVals[MS[0]-1][s],  /* vMs0 */
-          yearVals[MS[1]-1][s],  /* vMs1 */
-          yearVals[MS[2]-1][s],  /* vMs2 = final year */
-          cumWd,
-          annWdCnt > 0 ? annWdMin : 0,
-          annWdCnt > 0 ? annWdSum / annWdCnt : 0,
-          annWdMax,
-          retSum0 / MS[0],       /* avg S&P return for years 1–MS[0] */
-          retSum1 / MS[1],       /* avg S&P return for years 1–MS[1] */
-          retSum2 / MS[2]        /* avg S&P return for years 1–MS[2] */
+          yearVals[MS[0]-1][s],               /* [0] vMs0 */
+          yearVals[MS[1]-1][s],               /* [1] vMs1 */
+          yearVals[MS[2]-1][s],               /* [2] vMs2 = final year */
+          cumWd,                              /* [3] */
+          annWdCnt > 0 ? annWdMin : 0,        /* [4] annMin */
+          annWdCnt > 0 ? annWdSum / annWdCnt : 0, /* [5] annAvg */
+          annWdMax,                           /* [6] annMax */
+          (Math.pow(retProd0, 1 / MS[0]) - 1) * 100,  /* [7] CAGR % to milestone 0 */
+          (Math.pow(retProd1, 1 / MS[1]) - 1) * 100,  /* [8] CAGR % to milestone 1 */
+          (Math.pow(retProd2, 1 / MS[2]) - 1) * 100   /* [9] CAGR % to milestone 2 */
         ]);
         if (yearVals[MS[0]-1][s] <= 0) depCounts[0]++;
         if (yearVals[MS[1]-1][s] <= 0) depCounts[1]++;
@@ -1112,7 +1112,7 @@ function renderTable(tableRows, MS, YEARS, wdMode) {
   ];
 
   function retStr(r) {
-    return `<div class="avg-ret">${r >= 0 ? '+' : ''}${r.toFixed(1)}% avg</div>`;
+    return `<div class="avg-ret">${r >= 0 ? '+' : ''}${r.toFixed(1)}% CAGR</div>`;
   }
   function milestoneCell(val, ret, cls) {
     return `<td class="${cls}">${fmtM(val)}${retStr(ret)}</td>`;
