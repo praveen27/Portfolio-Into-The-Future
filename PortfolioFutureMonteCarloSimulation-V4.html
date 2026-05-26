@@ -228,6 +228,14 @@ canvas#scaleLegend { border-radius: 3px; }
       <input type="number" id="wdYear" value="5" min="1" max="30">
     </div>
 
+    <div class="field">
+      <label>Inflation rate (%)</label>
+      <div class="iwr">
+        <span class="sym suf">%</span>
+        <input type="number" id="inflationRate" value="3" min="0" max="20" step="0.1" class="hsuf">
+      </div>
+    </div>
+
     <div class="divider"></div>
 
     <div class="field">
@@ -414,7 +422,7 @@ canvas#scaleLegend { border-radius: 3px; }
       Primary source: <a href="http://www.econ.yale.edu/~shiller/data.htm" target="_blank" rel="noopener">Robert Shiller / Yale</a>
       long-run U.S. equity dataset; cross-referenced against Standard &amp; Poor's official annual releases and
       <a href="https://www.macrotrends.net/2526/sp-500-historical-annual-returns" target="_blank" rel="noopener">Macrotrends</a>.
-      Returns are <em>nominal</em> (not inflation-adjusted). Simulation does not account for fund fees, taxes, or inflation.
+      Returns are <em>nominal</em>. Withdrawals and additions are adjusted for inflation each year (configurable, default 3%). Simulation does not account for fund fees or taxes.
       Past returns do not guarantee future performance.
     </p>
 
@@ -727,7 +735,9 @@ function runMC() {
   const wdYear  = Math.min(YEARS, Math.max(1, parseInt(document.getElementById('wdYear').value) || 5));
   document.getElementById('wdYear').max = YEARS;
   const MS      = getMilestones(YEARS);
-  const capturedAddAmt = Math.max(0, parseFloat(document.getElementById('addAmt').value)  || 0);
+  const rawInf        = parseFloat(document.getElementById('inflationRate').value);
+  const capturedInflation = Math.max(0, isNaN(rawInf) ? 0.03 : rawInf / 100);
+  const capturedAddAmt    = Math.max(0, parseFloat(document.getElementById('addAmt').value)   || 0);
   const capturedAddYrs = Math.max(0, Math.min(YEARS, parseInt(document.getElementById('addYears').value) || 0));
 
   /* Build filtered pool and validate */
@@ -757,9 +767,9 @@ function runMC() {
       const end = Math.min(done + CHUNK, N);
       for (let s = done; s < end; s++) {
         const pool = getPool(pool70, YEARS, capturedSampling, capturedBlock);
-        let v = start, cumWd = 0;
+        let v = start, cumWd = 0, depYear = 0;
         let annWdMin = Infinity, annWdMax = 0, annWdSum = 0, annWdCnt = 0;
-        let retProd0 = 1, retProd1 = 1, retProd2 = 1;  /* compound growth factors to each milestone */
+        let retProd0 = 1, retProd1 = 1, retProd2 = 1;
         for (let y = 0; y < YEARS; y++) {
           const factor = 1 + pool[y].r / 100;
           if (y + 1 <= MS[0]) retProd0 *= factor;
@@ -769,19 +779,24 @@ function runMC() {
           /* 1. Apply market return */
           v *= factor;
 
-          /* 2. Add annual contribution (end-of-year, within addition period) */
-          if (capturedAddYrs > 0 && y + 1 <= capturedAddYrs) v += capturedAddAmt;
+          /* 2. Annual addition (end-of-year) — grows with inflation */
+          if (capturedAddYrs > 0 && y + 1 <= capturedAddYrs) {
+            v += capturedAddAmt * Math.pow(1 + capturedInflation, y);
+          }
 
-          /* 3. Apply withdrawal */
+          /* 3. Withdrawal — fixed amount grows with inflation each year;
+                % mode has a $5,000 floor (withdraw all if below) */
           if (y + 1 >= wdYear) {
             let wd = 0;
             if (capturedMode === 'fixed') {
-              wd = Math.min(wdAmt, Math.max(0, v));
-              v -= wd; cumWd += wd;
+              const inflatedWd = wdAmt * Math.pow(1 + capturedInflation, y + 1 - wdYear);
+              wd = Math.min(inflatedWd, Math.max(0, v));
             } else {
-              wd = Math.max(0, v * Math.min(wdAmt, 100) / 100);
-              v -= wd; cumWd += wd;
+              const pctWd = v * Math.min(wdAmt, 100) / 100;
+              wd = (pctWd < 5000 && v > 0) ? v   /* $5k floor: withdraw all */
+                 : Math.max(0, pctWd);
             }
+            v -= wd; cumWd += wd;
             if (wd > 0) {
               if (wd < annWdMin) annWdMin = wd;
               if (wd > annWdMax) annWdMax = wd;
@@ -789,8 +804,9 @@ function runMC() {
             }
           }
 
-          /* 4. Clamp — portfolio cannot go below zero */
+          /* 4. Clamp + record first depletion year */
           v = Math.max(0, v);
+          if (v <= 0 && depYear === 0) depYear = y + 1;
           yearVals[y].push(v);
         }
         /* store path summary — all values from the same simulation */
@@ -804,7 +820,8 @@ function runMC() {
           annWdMax,                           /* [6] annMax */
           (Math.pow(retProd0, 1 / MS[0]) - 1) * 100,  /* [7] CAGR % to milestone 0 */
           (Math.pow(retProd1, 1 / MS[1]) - 1) * 100,  /* [8] CAGR % to milestone 1 */
-          (Math.pow(retProd2, 1 / MS[2]) - 1) * 100   /* [9] CAGR % to milestone 2 */
+          (Math.pow(retProd2, 1 / MS[2]) - 1) * 100,  /* [9] CAGR % to milestone 2 */
+          depYear                                          /* [10] year portfolio first hit 0 (0=never) */
         ]);
         if (yearVals[MS[0]-1][s] <= 0) depCounts[0]++;
         if (yearVals[MS[1]-1][s] <= 0) depCounts[1]++;
@@ -816,7 +833,7 @@ function runMC() {
       document.getElementById('progLabel').textContent = done.toLocaleString() + ' / ' + N.toLocaleString() + ' simulations';
 
       if (done < N) { requestAnimationFrame(step); }
-      else { finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode, capturedSampling, capturedBlock, capturedAddAmt, capturedAddYrs); }
+      else { finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode, capturedSampling, capturedBlock, capturedAddAmt, capturedAddYrs, capturedInflation); }
     }
     step();
   }, 20);
@@ -825,7 +842,7 @@ function runMC() {
 /* ═══════════════════════════════════════
    RENDER RESULTS
 ═══════════════════════════════════════ */
-function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode, capturedSampling, capturedBlock, capturedAddAmt, capturedAddYrs) {
+function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, YEARS, capturedMode, capturedSampling, capturedBlock, capturedAddAmt, capturedAddYrs, capturedInflation) {
   yearVals.forEach(a => a.sort((x, y) => x - y));
 
   /* Extract per-simulation distributions and sort each independently.
@@ -868,10 +885,32 @@ function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, 
   /* Each render call is isolated — a failure in one must not block the others
      or prevent results from being shown. capturedMode is used throughout to
      avoid mid-run toggle changes corrupting the display. */
-  try { renderMilestoneCards(series, start, YEARS); }          catch(e) { console.error('Milestone cards:', e); }
+
+  /* Depletion years for each percentile's representative simulation.
+     Primary sort: final-year value ascending (higher = better).
+     Secondary sort: when final values tie at 0 (all depleted), earlier depletion
+     year = worse outcome = lower rank — ensures P10 depYear ≤ P25 depYear. */
+  simSummary.sort((a, b) => {
+    if (a[2] !== b[2]) return a[2] - b[2];        /* primary:   final value */
+    const da = a[10], db = b[10];
+    if (da > 0 && db > 0) return da - db;          /* secondary: earlier depletion = worse */
+    if (da > 0) return -1;                         /* depleted ranks below non-depleted */
+    if (db > 0) return  1;
+    return 0;
+  });
+  const depYears = {};
+  [10, 25, 50, 90].forEach(p => {
+    const idx = Math.min(Math.floor(p / 100 * simSummary.length), simSummary.length - 1);
+    depYears[p] = simSummary[idx][10];
+  });
+
+  try { renderMilestoneCards(series, start, YEARS, depYears); } catch(e) { console.error('Milestone cards:', e); }
   try { renderTable(tableRows, MS, YEARS, capturedMode); }     catch(e) { console.error('Table:', e); }
   try { renderDepletion(depCounts, MS, N, capturedMode, series, YEARS); } catch(e) { console.error('Depletion:', e); }
 
+  const infNote  = capturedInflation > 0
+    ? ` Inflation: ${(capturedInflation*100).toFixed(1)}% (applied to withdrawals${capturedAddAmt>0?' & additions':''}).`
+    : '';
   const addNote = capturedAddAmt > 0 && capturedAddYrs > 0
     ? ` Additions: $${Math.round(capturedAddAmt).toLocaleString()}/yr for ${capturedAddYrs} yr(s).`
     : '';
@@ -879,7 +918,7 @@ function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, 
     ? `Fixed withdrawal of $${Math.round(wdAmt).toLocaleString()}/yr starting year ${wdYear}.`
     : `${wdAmt.toFixed(1)}% of portfolio balance withdrawn annually starting year ${wdYear}.`;
   document.getElementById('footNote').textContent =
-    `${N.toLocaleString()} Monte Carlo simulations · ${YEARS} years per run · pool ${poolStart}–${poolEnd} (${poolEnd-poolStart+1} yrs) · sampling: ${capturedSampling==='noreplace'?'without replacement':capturedSampling==='block'?'block bootstrap (block='+capturedBlock+'yr)':'bootstrap (with replacement)'}. ${modeNote} Results are illustrative; past returns do not guarantee future performance.`;
+    `${N.toLocaleString()} Monte Carlo simulations · ${YEARS} years per run · pool ${poolStart}–${poolEnd} (${poolEnd-poolStart+1} yrs) · sampling: ${capturedSampling==='noreplace'?'without replacement':capturedSampling==='block'?'block bootstrap (block='+capturedBlock+'yr)':'bootstrap (with replacement)'}. ${modeNote}${addNote}${infNote} Results are illustrative; past returns do not guarantee future performance.`;
   document.getElementById('pageSub').textContent =
     `${N.toLocaleString()} simulations complete · P50 year-${YEARS} outcome: ${fmtM(series[50][YEARS-1])}`;
   document.getElementById('fanSub').textContent = N.toLocaleString() + ' runs';
@@ -901,7 +940,7 @@ function finalize(yearVals, simSummary, MS, depCounts, N, start, wdAmt, wdYear, 
 }
 
 /* ─── Milestone cards ─── */
-function renderMilestoneCards(series, start, YEARS) {
+function renderMilestoneCards(series, start, YEARS, depYears) {
   const cards = [
     { p: 10, id: 'mc10', sub: 'ms10' },
     { p: 25, id: 'mc25', sub: 'ms25' },
@@ -909,11 +948,15 @@ function renderMilestoneCards(series, start, YEARS) {
     { p: 90, id: 'mc90', sub: 'ms90' },
   ];
   cards.forEach(({ p, id, sub }) => {
-    const v = series[p][YEARS - 1];
-    document.getElementById(id).textContent = v <= 0 ? 'Depleted' : fmtM(v);
+    const v  = series[p][YEARS - 1];
+    const dy = depYears && depYears[p] > 0 ? depYears[p] : 0;
+    const dep = v <= 0;
+    document.getElementById(id).textContent = dep
+      ? (dy > 0 ? 'Depleted yr\u00a0' + dy : 'Depleted')
+      : fmtM(v);
     const chg = ((v - start) / start * 100);
-    document.getElementById(sub).textContent = v <= 0
-      ? 'Portfolio exhausted'
+    document.getElementById(sub).textContent = dep
+      ? (dy > 0 ? 'Portfolio exhausted in year\u00a0' + dy : 'Portfolio exhausted')
       : (chg >= 0 ? '+' : '') + chg.toFixed(0) + '% vs starting value';
   });
 }
